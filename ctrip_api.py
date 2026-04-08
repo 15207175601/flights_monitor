@@ -6,66 +6,19 @@ import json
 import time
 import random
 import logging
-import shutil
-import tempfile
 import os
 from typing import List, Dict
-from pathlib import Path
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
 from config import REQUEST_DELAY
+from browser import (
+    init_browser, close_browser,
+    BATCH_INTERCEPT_JS,
+)
 
 logger = logging.getLogger(__name__)
-
-# 注入到页面的 JS 拦截脚本 - 捕获 batchSearch 和 fuzzySearch 响应
-_INTERCEPT_JS = """
-Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-(function() {
-    window.__flightResponses = [];
-    window.__fuzzyResponses = [];
-    const origFetch = window.fetch;
-    window.fetch = function() {
-        return origFetch.apply(this, arguments).then(function(response) {
-            var url = typeof arguments[0] === 'string' ? arguments[0] : (arguments[0] && arguments[0].url) || '';
-            if (url.indexOf('batchSearch') !== -1) {
-                response.clone().text().then(function(body) {
-                    window.__flightResponses.push(body);
-                });
-            }
-            if (url.indexOf('fuzzySearch') !== -1) {
-                response.clone().text().then(function(body) {
-                    window.__fuzzyResponses.push(body);
-                });
-            }
-            return response;
-        });
-    };
-    var origOpen = XMLHttpRequest.prototype.open;
-    var origSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function(method, url) {
-        this._url = url;
-        return origOpen.apply(this, arguments);
-    };
-    XMLHttpRequest.prototype.send = function() {
-        var xhr = this;
-        if (this._url && (this._url.indexOf('batchSearch') !== -1)) {
-            xhr.addEventListener('load', function() {
-                try { window.__flightResponses.push(xhr.responseText); } catch(e) {}
-            });
-        }
-        if (this._url && (this._url.indexOf('fuzzySearch') !== -1)) {
-            xhr.addEventListener('load', function() {
-                try { window.__fuzzyResponses.push(xhr.responseText); } catch(e) {}
-            });
-        }
-        return origSend.apply(this, arguments);
-    };
-})();
-"""
 
 
 class CtripFlightClient:
@@ -74,92 +27,35 @@ class CtripFlightClient:
     LIST_URL_TPL = "https://flights.ctrip.com/online/list/oneway-{dcity}-{acity}?depdate={date}"
     PAGE_LOAD_WAIT = 12  # 等待页面加载和 API 响应的秒数
 
-    # macOS 下 Chrome 默认用户数据目录
-    _CHROME_USER_DATA = str(Path.home() / "Library/Application Support/Google/Chrome")
-
     def __init__(self, headless: bool = False):
         self.headless = headless
         self.driver = None
         self._tmp_profile_dir = None
 
-    def _prepare_profile(self):
-        """将 Chrome 默认 profile 的 cookie 数据拷贝到临时目录，避免锁冲突"""
-        src = os.path.join(self._CHROME_USER_DATA, "Default")
-        if not os.path.isdir(src):
-            logger.warning("未找到 Chrome 默认 profile: %s，将使用空 profile", src)
-            return None
-
-        tmp_dir = tempfile.mkdtemp(prefix="flight_chrome_")
-        dst = os.path.join(tmp_dir, "Default")
-        os.makedirs(dst, exist_ok=True)
-
-        # 只拷贝 cookie 相关文件，不拷贝整个 profile（太大）
-        for name in ("Cookies", "Cookies-journal", "Login Data", "Login Data-journal",
-                      "Preferences", "Secure Preferences", "Local State"):
-            src_file = os.path.join(src, name)
-            if not os.path.exists(src_file):
-                # Local State 在上层目录
-                src_file = os.path.join(self._CHROME_USER_DATA, name)
-            if os.path.exists(src_file):
-                dst_file = os.path.join(dst, name) if name != "Local State" else os.path.join(tmp_dir, name)
-                shutil.copy2(src_file, dst_file)
-
-        logger.info("已加载 Chrome 默认 cookie 数据")
-        return tmp_dir
-
     def init_session(self):
-        """启动 Chrome 浏览器（默认有头模式 + 用户 cookie）"""
-        logger.info("启动 Chrome 浏览器 (headless=%s)...", self.headless)
-        options = Options()
-        if self.headless:
-            options.add_argument("--headless=new")
-
-        # 有头模式下不复制 profile（Chrome 会检测篡改并重置，导致登录失效）
-        # 用户将在浏览器中手动登录
-        if self.headless:
-            self._tmp_profile_dir = self._prepare_profile()
-        if self._tmp_profile_dir:
-            options.add_argument(f"--user-data-dir={self._tmp_profile_dir}")
-            options.add_argument("--profile-directory=Default")
-
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument(
-            "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option("useAutomationExtension", False)
-
+        """启动 Chrome 浏览器（使用统一的 browser 模块）"""
         try:
-            self.driver = webdriver.Chrome(options=options)
-            # 注入拦截脚本（在每个页面加载前执行）
-            self.driver.execute_cdp_cmd(
-                "Page.addScriptToEvaluateOnNewDocument",
-                {"source": _INTERCEPT_JS},
+            self.driver, self._tmp_profile_dir = init_browser(
+                headless=self.headless,
+                intercept_js=BATCH_INTERCEPT_JS,
             )
-            logger.info("浏览器启动成功")
         except WebDriverException as e:
             logger.error("浏览器启动失败: %s", e)
             raise
 
     def close(self):
-        """程序退出时断开 driver 连接，但不关闭浏览器（由用户手动关闭）"""
-        if self.driver:
-            try:
-                self.driver.service.stop()
-            except Exception:
-                pass
-            self.driver = None
-        if self._tmp_profile_dir and os.path.isdir(self._tmp_profile_dir):
-            try:
-                shutil.rmtree(self._tmp_profile_dir, ignore_errors=True)
-            except Exception:
-                pass
-            self._tmp_profile_dir = None
+        """安全关闭浏览器（使用 driver.quit() 而非 service.stop()）"""
+        close_browser(self.driver, self._tmp_profile_dir)
+        self.driver = None
+        self._tmp_profile_dir = None
+
+    def __enter__(self):
+        self.init_session()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.close()
+        return False
 
     def discover_destinations(self, dep_city_code: str = "BJS") -> Dict[str, str]:
         """

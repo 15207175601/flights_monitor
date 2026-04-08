@@ -115,6 +115,19 @@ def get_all_travel_periods(only_holidays: bool = False) -> List[Dict]:
     return periods
 
 
+def calculate_trip_days(period) -> list:
+    """
+    根据假期类型计算出行天数范围
+    周末: n ~ n+2 天 (n = 假期天数)
+    节假日: n ~ n+4 天 (n = 假期天数)
+    """
+    n = (period["holiday_end"] - period["holiday_start"]).days + 1
+    if period["type"] == "weekend":
+        return list(range(n, n + 3))
+    else:
+        return list(range(n, n + 5))
+
+
 def get_periods_for_dates(dates_str: str) -> List[Dict]:
     """
     根据用户指定的日期列表生成出行时段
@@ -154,8 +167,13 @@ def get_periods_for_dates(dates_str: str) -> List[Dict]:
                 periods.append(calculate_travel_dates(matched_holiday))
         else:
             # 找到该日期所在周的周六-周日
-            days_until_sat = (5 - d.weekday()) % 7
-            saturday = d + timedelta(days=days_until_sat)
+            # weekday: Mon=0 ... Sat=5, Sun=6
+            # Sunday 特殊处理：回退 1 天到当周的 Saturday
+            if d.weekday() == 6:
+                saturday = d - timedelta(days=1)
+            else:
+                days_until_sat = (5 - d.weekday()) % 7
+                saturday = d + timedelta(days=days_until_sat)
             sunday = saturday + timedelta(days=1)
             key = ("weekend", saturday)
             if key not in seen:

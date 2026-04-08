@@ -9,97 +9,42 @@
 import sys
 import os
 import logging
-import math
 import json
 import random
 import time
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-
-# 确保能导入同目录模块
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from typing import Dict, List, Optional, Set
 
 from config import (
     DEPARTURE_CITY_CODE,
     DEPARTURE_CITY_NAME,
     MAX_DISCOUNT_RATE,
     MIN_DISTANCE_KM,
+    MAX_CONSECUTIVE_EMPTY,
+    CITY_SLEEP_MIN,
+    CITY_SLEEP_MAX,
 )
 from date_utils import get_all_travel_periods, get_periods_for_dates
 from ctrip_api import CtripFlightClient
-from discover import resolve_city
+from shared import CITY_COORDS, haversine_km, resolve_city, parse_datetime
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
 logger = logging.getLogger(__name__)
-
-# 主要城市坐标 (纬度, 经度)
-_CITY_COORDS = {
-    "北京": (39.90, 116.41), "上海": (31.23, 121.47), "广州": (23.13, 113.26),
-    "深圳": (22.54, 114.06), "成都": (30.57, 104.07), "杭州": (30.27, 120.15),
-    "武汉": (30.59, 114.31), "西安": (34.26, 108.94), "重庆": (29.56, 106.55),
-    "南京": (32.06, 118.80), "天津": (39.13, 117.20), "长沙": (28.23, 112.94),
-    "沈阳": (41.80, 123.43), "哈尔滨": (45.75, 126.65), "大连": (38.91, 121.60),
-    "济南": (36.65, 116.99), "青岛": (36.07, 120.38), "郑州": (34.75, 113.65),
-    "昆明": (25.04, 102.71), "厦门": (24.48, 118.09), "合肥": (31.82, 117.23),
-    "南昌": (28.68, 115.86), "福州": (26.07, 119.31), "太原": (37.87, 112.55),
-    "南宁": (22.82, 108.32), "贵阳": (26.65, 106.63), "海口": (20.04, 110.35),
-    "三亚": (18.25, 109.50), "兰州": (36.06, 103.83), "乌鲁木齐": (43.83, 87.62),
-    "呼和浩特": (40.84, 111.75), "石家庄": (38.04, 114.51), "长春": (43.88, 125.32),
-    "拉萨": (29.65, 91.13), "银川": (38.49, 106.23), "西宁": (36.62, 101.78),
-    "宁波": (29.87, 121.55), "温州": (28.00, 120.67), "烟台": (37.46, 121.45),
-    "威海": (37.51, 122.12), "泉州": (24.87, 118.68), "珠海": (22.27, 113.58),
-    "北海": (21.47, 109.12), "桂林": (25.27, 110.29), "丽江": (26.87, 100.23),
-    "洛阳": (34.62, 112.45), "宜昌": (30.69, 111.29), "岳阳": (29.36, 113.09),
-    "揭阳": (23.55, 116.37), "绵阳": (31.47, 104.74), "赤峰": (42.26, 118.96),
-    "连云港": (34.60, 119.22), "通辽": (43.65, 122.26), "满洲里": (49.60, 117.38),
-    "包头": (40.66, 109.84), "鄂尔多斯": (39.61, 109.78), "锡林浩特": (43.97, 116.09),
-    "嘉峪关": (39.77, 98.29), "临沂": (35.10, 118.36), "柳州": (24.33, 109.41),
-    "武夷山": (27.76, 118.04), "湛江": (21.27, 110.36),
-}
-
-# 主要城市携程城市代码（用于 --from 参数指定出发城市）
-_CITY_CODES = {
-    "北京": "BJS", "上海": "SHA", "广州": "CAN", "深圳": "SZX", "成都": "CTU",
-    "杭州": "HGH", "武汉": "WUH", "西安": "SIA", "重庆": "CKG", "南京": "NKG",
-    "天津": "TSN", "长沙": "CSX", "沈阳": "SHE", "哈尔滨": "HRB", "大连": "DLC",
-    "济南": "TNA", "青岛": "TAO", "郑州": "CGO", "昆明": "KMG", "厦门": "XMN",
-    "合肥": "HFE", "南昌": "KHN", "福州": "FOC", "太原": "TYN", "南宁": "NNG",
-    "贵阳": "KWE", "海口": "HAK", "三亚": "SYX", "兰州": "LHW", "乌鲁木齐": "URC",
-    "呼和浩特": "HET", "石家庄": "SJW", "长春": "CGQ", "拉萨": "LXA", "银川": "INC",
-    "西宁": "XNN", "宁波": "NGB", "温州": "WNZ", "烟台": "YNT", "威海": "WEH",
-    "泉州": "JJN", "珠海": "ZUH", "北海": "BHY", "桂林": "KWL", "丽江": "LJG",
-    "洛阳": "LYA", "宜昌": "YIH", "揭阳": "SWA", "绵阳": "MIG", "赤峰": "CIF",
-    "连云港": "LYG", "通辽": "TGO", "满洲里": "NZH", "包头": "BAV", "鄂尔多斯": "DSN",
-    "锡林浩特": "XIL", "嘉峪关": "JGN", "临沂": "LYI", "柳州": "LZH",
-    "武夷山": "WUS", "湛江": "ZHA", "岳阳": "YYA",
-}
-
-
-def _haversine_km(lat1, lon1, lat2, lon2):
-    """计算两个坐标之间的大圆距离（公里）"""
-    R = 6371
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
-    return R * 2 * math.asin(math.sqrt(a))
 
 
 def filter_by_distance(destinations, dep_city_name, min_km):
     """过滤掉距离出发城市太近的目的地"""
-    dep_coord = _CITY_COORDS.get(dep_city_name)
+    dep_coord = CITY_COORDS.get(dep_city_name)
     if not dep_coord:
         return destinations
 
     filtered = {}
     for code, name in destinations.items():
-        coord = _CITY_COORDS.get(name)
+        coord = CITY_COORDS.get(name)
         if not coord:
             filtered[code] = name  # 未知坐标的城市保留
             continue
-        dist = _haversine_km(dep_coord[0], dep_coord[1], coord[0], coord[1])
+        dist = haversine_km(dep_coord[0], dep_coord[1], coord[0], coord[1])
         if dist >= min_km:
             filtered[code] = name
         else:
@@ -107,53 +52,63 @@ def filter_by_distance(destinations, dep_city_name, min_km):
     return filtered
 
 
-# === 断点续搜 ===
-_CHECKPOINT_DIR = os.path.dirname(os.path.abspath(__file__))
-_CHECKPOINT_FILE = os.path.join(_CHECKPOINT_DIR, ".search_checkpoint.json")
-
-# 连续空结果阈值：超过此数判定为被反爬封禁
-MAX_CONSECUTIVE_EMPTY = 5
+# === 断点续搜 (Memento) ===
+_CHECKPOINT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".search_checkpoint.json")
 
 
-def _save_checkpoint(data):
-    """保存搜索进度到文件"""
-    try:
-        with open(_CHECKPOINT_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-        logger.debug("进度已保存: %s", _CHECKPOINT_FILE)
-    except Exception as e:
-        logger.warning("保存进度失败: %s", e)
+@dataclass
+class SearchCheckpoint:
+    """搜索进度快照 (Memento Pattern)"""
+    dep_city_code: str
+    dep_city_name: str
+    completed: Dict[str, Set[str]] = field(default_factory=dict)
+    results: List[dict] = field(default_factory=list)
 
+    def save(self) -> None:
+        """保存搜索进度到文件"""
+        try:
+            data = {
+                "dep_city_code": self.dep_city_code,
+                "dep_city_name": self.dep_city_name,
+                "completed": {k: list(v) for k, v in self.completed.items()},
+                "results": self.results,
+                "timestamp": datetime.now().isoformat(),
+            }
+            with open(_CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+            logger.debug("进度已保存: %s", _CHECKPOINT_FILE)
+        except Exception as e:
+            logger.warning("保存进度失败: %s", e)
 
-def _load_checkpoint():
-    """加载上次搜索进度"""
-    if not os.path.exists(_CHECKPOINT_FILE):
-        return None
-    try:
-        with open(_CHECKPOINT_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning("加载进度失败: %s", e)
-        return None
+    @classmethod
+    def load(cls) -> Optional["SearchCheckpoint"]:
+        """加载上次搜索进度"""
+        if not os.path.exists(_CHECKPOINT_FILE):
+            return None
+        try:
+            with open(_CHECKPOINT_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return cls(
+                dep_city_code=data.get("dep_city_code", ""),
+                dep_city_name=data.get("dep_city_name", ""),
+                completed={k: set(v) for k, v in data.get("completed", {}).items()},
+                results=data.get("results", []),
+            )
+        except Exception as e:
+            logger.warning("加载进度失败: %s", e)
+            return None
 
+    @classmethod
+    def clear(cls) -> None:
+        """搜索完成后清除进度文件"""
+        if os.path.exists(_CHECKPOINT_FILE):
+            os.remove(_CHECKPOINT_FILE)
 
-def _clear_checkpoint():
-    """搜索完成后清除进度文件"""
-    if os.path.exists(_CHECKPOINT_FILE):
-        os.remove(_CHECKPOINT_FILE)
-
-
-def _parse_dt(dt_str):
-    """解析携程 API 返回的日期时间字符串"""
-    try:
-        return datetime.fromisoformat(dt_str)
-    except (ValueError, TypeError):
-        return None
 
 
 def _fmt_time(dt_str):
     """从日期时间字符串中提取 HH:MM"""
-    dt = _parse_dt(dt_str)
+    dt = parse_datetime(dt_str)
     return dt.strftime("%H:%M") if dt else "-"
 
 
@@ -241,11 +196,11 @@ def search_flights_for_period(client, period, destinations, dep_city_code, dep_c
             best_pair = None
             best_total = float("inf")
             for out in cheap_out:
-                out_arr = _parse_dt(out["arr_time"])
+                out_arr = parse_datetime(out["arr_time"])
                 if not out_arr:
                     continue
                 for inb in cheap_in:
-                    inb_dep = _parse_dt(inb["dep_time"])
+                    inb_dep = parse_datetime(inb["dep_time"])
                     if not inb_dep:
                         continue
                     if inb_dep >= out_arr + timedelta(hours=24):
@@ -277,7 +232,7 @@ def search_flights_for_period(client, period, destinations, dep_city_code, dep_c
 
         # 每完成一个城市后随机休息 30-60 秒，降低反爬风险（最后一个城市不休息）
         if idx < dest_total:
-            sleep_sec = random.randint(30, 60)
+            sleep_sec = random.randint(CITY_SLEEP_MIN, CITY_SLEEP_MAX)
             logger.info("  休息 %d 秒后继续...", sleep_sec)
             time.sleep(sleep_sec)
 
@@ -366,7 +321,11 @@ def run(args):
 
     # 获取所有需要搜索的出行时段
     if args.dates:
-        periods = get_periods_for_dates(args.dates)
+        try:
+            periods = get_periods_for_dates(args.dates)
+        except ValueError as e:
+            print(f"日期参数错误: {e}")
+            return
     else:
         periods = get_all_travel_periods(only_holidays=args.holidays_only)
 
@@ -380,9 +339,7 @@ def run(args):
     print_period_summary(periods)
 
     # 初始化客户端（默认有头模式，--headless 可切换）
-    client = CtripFlightClient(headless=args.headless)
-    try:
-        client.init_session()
+    with CtripFlightClient(headless=args.headless) as client:
 
         # 有头模式下先打开携程首页，等待用户完成登录
         if not args.headless:
@@ -429,12 +386,10 @@ def run(args):
         completed_period_cities = {}  # {period_name: set(city_codes)}
         prev_results = []
         if not args.fresh:
-            checkpoint = _load_checkpoint()
-            if checkpoint and checkpoint.get("dep_city_code") == dep_city_code:
-                completed_period_cities = {
-                    k: set(v) for k, v in checkpoint.get("completed", {}).items()
-                }
-                prev_results = checkpoint.get("results", [])
+            checkpoint = SearchCheckpoint.load()
+            if checkpoint and checkpoint.dep_city_code == dep_city_code:
+                completed_period_cities = dict(checkpoint.completed)
+                prev_results = checkpoint.results
                 skipped = sum(len(v) for v in completed_period_cities.values())
                 logger.info(
                     "检测到断点，自动恢复: 已完成 %d 个城市搜索, 已有 %d 条结果",
@@ -445,7 +400,7 @@ def run(args):
                     logger.info("断点的出发城市不匹配，将重新开始搜索")
                 checkpoint = None
         elif os.path.exists(_CHECKPOINT_FILE):
-            _clear_checkpoint()
+            SearchCheckpoint.clear()
             logger.info("已忽略断点文件，从头开始搜索")
 
         logger.info("共 %d 个出行时段, %d 个目的地城市", len(periods), len(destinations))
@@ -465,22 +420,19 @@ def run(args):
 
         def _on_city_done(city_code, period_results, period_completed):
             """每完成一个城市，立即保存进度到 checkpoint 文件"""
-            # 用最新的 period_results 和 period_completed 更新全局状态
-            # （注意：period_results/period_completed 是 search_flights_for_period 内的累积值）
-            current_all = list(prev_results) + period_results
             merged = dict(completed_period_cities)
             merged[_current_period_name] = (
                 completed_period_cities.get(_current_period_name, set()) | period_completed
             )
-            _save_checkpoint({
-                "dep_city_code": dep_city_code,
-                "dep_city_name": dep_city_name,
-                "completed": {k: list(v) for k, v in merged.items()},
-                "results": current_all,
-                "timestamp": datetime.now().isoformat(),
-            })
+            ckpt = SearchCheckpoint(
+                dep_city_code=dep_city_code,
+                dep_city_name=dep_city_name,
+                completed=merged,
+                results=list(prev_results) + period_results,
+            )
+            ckpt.save()
             logger.debug("进度已保存: %s 完成 (%d 城市, %d 结果)",
-                         city_code, sum(len(v) for v in merged.values()), len(current_all))
+                         city_code, sum(len(v) for v in merged.values()), len(ckpt.results))
 
         for i, period in enumerate(periods, 1):
             # 过滤掉已完成的城市
@@ -526,12 +478,10 @@ def run(args):
                 if isinstance(e, KeyboardInterrupt):
                     logger.warning("用户中断搜索 (Ctrl+C)")
                 # 进度已在 on_city_done 回调中实时保存，这里只需从 checkpoint 恢复最新状态
-                saved = _load_checkpoint()
+                saved = SearchCheckpoint.load()
                 if saved:
-                    all_results = saved.get("results", [])
-                    completed_period_cities = {
-                        k: set(v) for k, v in saved.get("completed", {}).items()
-                    }
+                    all_results = saved.results
+                    completed_period_cities = dict(saved.completed)
                 logger.info("进度已保存，下次运行可从中断位置继续（加 --fresh 可强制从头）")
                 break
 
@@ -543,8 +493,6 @@ def run(args):
             print("下次运行时会自动从中断位置继续搜索（加 --fresh 可强制从头开始）")
             sys.exit(2)  # 退出码 2 = 被中止，需要重试
         else:
-            _clear_checkpoint()
+            SearchCheckpoint.clear()
             logger.info("搜索全部完成，已清除进度文件")
-    finally:
-        client.close()
 

@@ -78,6 +78,41 @@ python main.py discover --group 北京,武汉 --min-together 3
 - **查询间隔**: 每次切换出发城市搜索前随机等待 30~60 秒，防反爬
 - **输出格式**: 同时输出简要表格（按合计价排序）和详细航班文档（含每人请假天数）
 
+### discover — 国际航班搜索
+
+```bash
+# 随机搜索 3 个国家的特价机票
+python main.py discover --abroad
+
+# 指定国家
+python main.py discover --abroad 日本,泰国,韩国
+
+# 中国地区
+python main.py discover --abroad 中国香港,中国台北,中国澳门
+
+# 组合参数
+python main.py discover --abroad 日本,法国 --from 上海 --max-price 3000 --holidays-only
+
+# 包含无效输入（会提示哪些无效并跳过）
+python main.py discover --abroad 日本,火星,泰国
+
+# 测试模式
+python main.py discover --abroad 日本,泰国,韩国 --test
+```
+
+**支持的国家/地区（60个）：**
+
+| 区域 | 国家/地区 |
+|------|----------|
+| 亚洲(21) | 缅甸、菲律宾、马来西亚、老挝、印度尼西亚、印度、日本、韩国、泰国、马尔代夫、越南、阿联酋、柬埔寨、斯里兰卡、格鲁吉亚、哈萨克斯坦、蒙古、乌兹别克斯坦、尼泊尔、沙特阿拉伯、朝鲜 |
+| 欧洲(25) | 俄罗斯、波兰、英国、法国、意大利、土耳其、西班牙、德国、荷兰、瑞士、匈牙利、希腊、冰岛、塞尔维亚、比利时、奥地利、芬兰、丹麦、挪威、葡萄牙、瑞典、捷克、卢森堡、斯洛伐克、斯洛文尼亚 |
+| 美洲(4) | 美国、加拿大、墨西哥、巴西 |
+| 大洋洲(3) | 澳大利亚、新西兰、斐济 |
+| 非洲(7) | 埃塞俄比亚、南非、坦桑尼亚、埃及、摩洛哥、肯尼亚、毛里求斯 |
+| 中国地区(4) | 中国香港、中国台北、高雄、中国澳门 |
+
+每次 API 查询最多 3 个国家，超过 3 个自动分批，批次间随机等待 30-60 秒。
+
 ### monitor — 逐城精确监控
 
 ```bash
@@ -112,6 +147,7 @@ python main.py monitor --debug
 | `--from <城市>` | 出发城市（中文名或三字码） | 北京 |
 | `--group <城市列表>` | 多人同行模式，逗号分隔出发城市 | - |
 | `--min-together <天>` | 多人同行最小同游天数 | 2 |
+| `--abroad [国家列表]` | 国际航班搜索，不带值=随机3国，带值=逗号分隔 | - |
 | `--holidays-only` | 只搜索法定节假日 | 搜索全部 |
 | `--next` | 只搜索最近一个假期/周末 | 搜索全部 |
 | `--dates <日期>` | 只搜索指定日期（逗号分隔，YYYY-MM-DD） | 自动计算 |
@@ -207,12 +243,20 @@ bash auto_retry.sh --from 上海 --holidays-only
 
 ```
 flight-monitor/
-├── main.py              # 统一入口（子命令分发）
-├── discover.py          # discover 子命令：FuzzySearch 全国概览
-├── monitor.py           # monitor 子命令：逐城精确监控
-├── ctrip_api.py         # 携程 API 客户端（Selenium + JS拦截）
+├── main.py              # 统一入口（子命令分发、logging 配置）
+├── models.py            # 数据模型（dataclass + enum）
 ├── config.py            # 配置文件（假期、折扣、过滤等）
-├── date_utils.py        # 日期计算（假期/周末日期范围）
+├── shared.py            # 共享工具（城市数据、坐标、距离、日期解析）
+├── date_utils.py        # 日期计算（假期/周末日期范围、出行天数）
+├── browser.py           # 浏览器管理（Chrome 启动/关闭/JS 注入）
+├── ctrip_api.py         # 携程 API 客户端（Selenium + JS 拦截）
+├── discover.py          # discover 子命令入口（编排搜索流程）
+├── discover_api.py      # discover API 捕获/重放/搜索
+├── discover_parse.py    # discover 响应解析/过滤/去重
+├── discover_print.py    # discover 结果格式化输出
+├── discover_group.py    # discover 多人同行搜索
+├── discover_abroad.py   # discover 国际航班搜索
+├── monitor.py           # monitor 子命令：逐城精确监控
 ├── auto_retry.sh        # 自动重试脚本（monitor 专用）
 ├── requirements.txt     # Python 依赖
 └── README.md

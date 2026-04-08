@@ -13,6 +13,7 @@
     python main.py monitor --help
 """
 import argparse
+import logging
 import sys
 import os
 
@@ -103,6 +104,10 @@ def build_parser():
     dp.add_argument("--test", action="store_true", help="测试模式: 只搜索1个时段")
     dp.add_argument("--debug", action="store_true", help="显示调试日志")
     dp.add_argument(
+        "--abroad", nargs="?", const="", default=None,
+        help="国际航班搜索: 不带值=随机3个国家, 带值=逗号分隔国家名, 如 --abroad 日本,泰国,韩国",
+    )
+    dp.add_argument(
         "--headless", action="store_true", default=True,
         help="无头模式（默认开启）",
     )
@@ -139,13 +144,23 @@ def build_parser():
     )
     mp.add_argument("--test", action="store_true", help="测试模式：只搜2个目的地+最近1个假期")
     mp.add_argument("--debug", action="store_true", help="显示调试日志")
-    mp.add_argument("--headless", action="store_true", help="无头模式运行")
+    mp.add_argument(
+        "--headless", action="store_true", default=False,
+        help="无头模式运行（默认关闭，因 monitor 需要登录）",
+    )
     mp.add_argument("--fresh", action="store_true", help="忽略断点，强制从头开始搜索")
 
     return parser
 
 
 def main():
+    # 统一 logging 配置（在 lazy import 之前）
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     parser = build_parser()
     args = parser.parse_args()
 
