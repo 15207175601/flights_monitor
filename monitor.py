@@ -27,7 +27,7 @@ from config import (
 )
 from date_utils import get_all_travel_periods, get_periods_for_dates
 from ctrip_api import CtripFlightClient
-from shared import CITY_COORDS, haversine_km, resolve_city, parse_datetime, fmt_datetime_short
+from shared import CITY_COORDS, haversine_km, resolve_city, parse_datetime, fmt_datetime_short, fmt_duration_detail
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +265,7 @@ def print_results(all_results, dep_city_name):
         dep_range = results[0]['depart_range'] if results else ""
         ret_range = results[0]['return_range'] if results else ""
         print(f"\n## {period_name}（出发: {dep_range} | 返程: {ret_range}）\n")
-        print("| 排名 | 目的地 | 去程航班 | 出发时间 | 到达 | 去程价格 | 折扣 | 回程航班 | 返程时间 | 到达 | 回程价格 | 折扣 | 往返总价 |")
+        print("| 排名 | 目的地 | 去程航班 | 出发时间 | 耗时 | 去程价格 | 折扣 | 回程航班 | 返程时间 | 耗时 | 回程价格 | 折扣 | 往返总价 |")
         print("|------|--------|----------|----------|------|----------|------|----------|----------|------|----------|------|----------|")
 
         for rank, r in enumerate(results, 1):
@@ -276,17 +276,17 @@ def print_results(all_results, dep_city_name):
             out_dt = fmt_datetime_short(out["date"], out["dep_time"]) if out else "-"
             out_price = f"¥{out['price']}" if out else "-"
             out_disc = out["discount_display"] if out else "-"
-            out_arr_t = _fmt_time(out["arr_time"]) if out else "-"
+            out_dur = fmt_duration_detail(out.get("duration", 0), out.get("transfer_time", 0)) if out else "-"
 
             inb_flight = inb["flight_number"] if inb else "-"
             inb_dt = fmt_datetime_short(inb["date"], inb["dep_time"]) if inb else "-"
             inb_price = f"¥{inb['price']}" if inb else "-"
             inb_disc = inb["discount_display"] if inb else "-"
-            inb_arr_t = _fmt_time(inb["arr_time"]) if inb else "-"
+            inb_dur = fmt_duration_detail(inb.get("duration", 0), inb.get("transfer_time", 0)) if inb else "-"
 
             total = f"¥{r['total_price']}"
 
-            print(f"| {rank} | {r['city']} | {out_flight} | {out_dt} | {out_arr_t} | {out_price} | {out_disc} | {inb_flight} | {inb_dt} | {inb_arr_t} | {inb_price} | {inb_disc} | **{total}** |")
+            print(f"| {rank} | {r['city']} | {out_flight} | {out_dt} | {out_dur} | {out_price} | {out_disc} | {inb_flight} | {inb_dt} | {inb_dur} | {inb_price} | {inb_disc} | **{total}** |")
 
     print(f"\n> 共找到 **{len(all_results)}** 条特价往返线路\n")
 

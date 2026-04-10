@@ -167,6 +167,21 @@ def fmt_duration(minutes):
     return f"{h}h{m:02d}m" if h else f"{m}m"
 
 
+def fmt_duration_detail(fly_min, transfer_min=0):
+    """格式化飞行时长，含中转耗时
+
+    直达: "2h30m"
+    中转: "飞2h30m+转1h20m"
+    """
+    if not fly_min and not transfer_min:
+        return "-"
+    fly_str = fmt_duration(fly_min)
+    if not transfer_min:
+        return fly_str
+    trans_str = fmt_duration(transfer_min)
+    return f"飞{fly_str}+转{trans_str}"
+
+
 def fmt_datetime_short(date_str, time_str=""):
     """合并日期+时间为 'MM/DD HH:MM' 格式，如 '04/11 09:55'
     date_str: '2026-04-11' 或含日期的字符串

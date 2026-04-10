@@ -13,6 +13,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
 from config import REQUEST_DELAY
+from shared import parse_datetime
 from browser import (
     init_browser, close_browser,
     BATCH_INTERCEPT_JS,
@@ -219,17 +220,51 @@ class CtripFlightClient:
 
         for item in fl_list:
             try:
-                # 航班基本信息
+                # 航班基本信息 — 支持中转航班（flightList 可能有多段）
                 seg = item.get("flightSegments", [{}])[0]
-                fl = seg.get("flightList", [{}])[0]
+                fl_all = seg.get("flightList", [])
+                if not fl_all:
+                    parse_error += 1
+                    continue
 
-                flight_no = fl.get("flightNo", "")
-                airline = fl.get("marketAirlineName", "")
-                dep_time = fl.get("departureDateTime", "")
-                arr_time = fl.get("arrivalDateTime", "")
-                dep_airport = fl.get("departureAirportShortName", "")
-                arr_airport = fl.get("arrivalAirportShortName", "")
-                duration = fl.get("duration", 0)
+                first_fl = fl_all[0]
+                last_fl = fl_all[-1]
+                transfer_count = len(fl_all) - 1
+
+                # 航班号：多段用 → 连接
+                flight_nos = [f.get("flightNo", "") for f in fl_all if f.get("flightNo")]
+                flight_no = "→".join(flight_nos)
+
+                # 航司：去重合并
+                airlines_seen = []
+                for f in fl_all:
+                    a = f.get("marketAirlineName", "")
+                    if a and a not in airlines_seen:
+                        airlines_seen.append(a)
+                airline = "/".join(airlines_seen)
+
+                # 出发/到达：取第一段出发、最后一段到达
+                dep_time = first_fl.get("departureDateTime", "")
+                arr_time = last_fl.get("arrivalDateTime", "")
+                dep_airport = first_fl.get("departureAirportShortName", "")
+                arr_airport = last_fl.get("arrivalAirportShortName", "")
+
+                # 飞行耗时：各段 duration 之和
+                fly_duration = sum(f.get("duration", 0) for f in fl_all)
+
+                # 中转耗时：相邻段之间的等待时间
+                transfer_time = 0
+                transfer_cities = []
+                for ti in range(len(fl_all) - 1):
+                    cur_arr = fl_all[ti].get("arrivalDateTime", "")
+                    nxt_dep = fl_all[ti + 1].get("departureDateTime", "")
+                    t_city = fl_all[ti].get("arrivalAirportShortName", "")
+                    if t_city:
+                        transfer_cities.append(t_city)
+                    t1 = parse_datetime(cur_arr)
+                    t2 = parse_datetime(nxt_dep)
+                    if t1 and t2:
+                        transfer_time += max(0, int((t2 - t1).total_seconds() / 60))
 
                 # 找最低经济舱价格
                 best_price = None
@@ -280,7 +315,10 @@ class CtripFlightClient:
                     "arr_airport": arr_airport,
                     "dep_time": dep_time,
                     "arr_time": arr_time,
-                    "duration": duration,
+                    "duration": fly_duration,
+                    "transfer_time": transfer_time,
+                    "transfer_count": transfer_count,
+                    "transfer_cities": transfer_cities,
                     "price": best_price["price"],
                     "discount_rate": round(rate, 2),
                     "discount_display": disc_display,

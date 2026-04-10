@@ -17,22 +17,74 @@ __all__ = [
 ]
 
 
-def _extract_flight(fl):
-    """从携程航班 dict 中提取标准化航班信息"""
-    if not fl:
-        return {"flight_no": "", "airline": "", "dep_airport": "", "arr_airport": "",
-                "dep_time": "", "arr_time": "", "duration": 0}
-    airline_info = fl.get("airline", {})
-    dport = fl.get("dport", {})
-    aport = fl.get("aport", {})
+_EMPTY_FLIGHT = {
+    "flight_no": "", "airline": "", "dep_airport": "", "arr_airport": "",
+    "dep_time": "", "arr_time": "", "duration": 0,
+    "transfer_time": 0, "transfer_count": 0, "transfer_cities": [],
+}
+
+
+def _extract_flights(flight_list):
+    """从同一方向的多段航班列表中提取合并航班信息
+
+    对于直达航班 (1段)：与之前行为一致。
+    对于中转航班 (多段)：合并航班号、累加飞行耗时、计算中转等待时间。
+    """
+    if not flight_list:
+        return dict(_EMPTY_FLIGHT)
+
+    # 按 sequence 排序确保正确顺序
+    flight_list = sorted(flight_list, key=lambda f: f.get("sequence", 0))
+
+    first = flight_list[0]
+    last = flight_list[-1]
+
+    # 航班号：多段用 → 连接
+    flight_nos = [f.get("flightNo", "") for f in flight_list if f.get("flightNo")]
+    airlines = []
+    seen_airlines = set()
+    for f in flight_list:
+        a = f.get("airline", {})
+        name = a.get("name", "") if isinstance(a, dict) else ""
+        if name and name not in seen_airlines:
+            airlines.append(name)
+            seen_airlines.add(name)
+
+    # 出发/到达：取第一段出发、最后一段到达
+    first_dport = first.get("dport", {})
+    last_aport = last.get("aport", {})
+
+    # 飞行耗时：各段 duration 之和
+    fly_duration = sum(f.get("duration", 0) for f in flight_list)
+
+    # 中转耗时：相邻两段之间的等待时间（到达→下一段出发）
+    transfer_time = 0
+    transfer_cities = []
+    for i in range(len(flight_list) - 1):
+        cur_atime = flight_list[i].get("atime", "")
+        nxt_dtime = flight_list[i + 1].get("dtime", "")
+        cur_aport = flight_list[i].get("aport", {})
+        city = cur_aport.get("cityName", cur_aport.get("name", ""))
+        if city:
+            transfer_cities.append(city)
+        if cur_atime and nxt_dtime:
+            from shared import parse_datetime
+            t1 = parse_datetime(cur_atime.replace(" ", "T") if "T" not in cur_atime else cur_atime)
+            t2 = parse_datetime(nxt_dtime.replace(" ", "T") if "T" not in nxt_dtime else nxt_dtime)
+            if t1 and t2:
+                transfer_time += max(0, int((t2 - t1).total_seconds() / 60))
+
     return {
-        "flight_no": fl.get("flightNo", ""),
-        "airline": airline_info.get("name", "") if isinstance(airline_info, dict) else "",
-        "dep_airport": dport.get("fullName", dport.get("name", "")),
-        "arr_airport": aport.get("fullName", aport.get("name", "")),
-        "dep_time": fl.get("dtime", ""),
-        "arr_time": fl.get("atime", ""),
-        "duration": fl.get("duration", 0),
+        "flight_no": "→".join(flight_nos) if flight_nos else "",
+        "airline": "/".join(airlines) if airlines else "",
+        "dep_airport": first_dport.get("fullName", first_dport.get("name", "")),
+        "arr_airport": last_aport.get("fullName", last_aport.get("name", "")),
+        "dep_time": first.get("dtime", ""),
+        "arr_time": last.get("atime", ""),
+        "duration": fly_duration,
+        "transfer_time": transfer_time,
+        "transfer_count": len(flight_list) - 1,
+        "transfer_cities": transfer_cities,
     }
 
 
@@ -82,24 +134,25 @@ def _parse_single_route(route, sdate, allow_intl=False):
     jump_url = best.get("jumpUrl", "")
 
     # 航班信息 flights[] — segment=1 去程, segment=2 返程
+    # 同一 segment 可能有多段（中转航班），按 sequence 排序后合并
     flights = route.get("flights", [])
-    go_flight = {}
-    ret_flight = {}
+    go_flights = []
+    ret_flights = []
     for fl in flights:
         seg = fl.get("segment", 0)
-        if seg == 1 and not go_flight:
-            go_flight = fl
-        elif seg == 2 and not ret_flight:
-            ret_flight = fl
+        if seg == 1:
+            go_flights.append(fl)
+        elif seg == 2:
+            ret_flights.append(fl)
 
     # 如果没有 segment 标记，按顺序取
-    if not go_flight and flights:
-        go_flight = flights[0]
-    if not ret_flight and len(flights) > 1:
-        ret_flight = flights[1]
+    if not go_flights and flights:
+        go_flights = [flights[0]]
+    if not ret_flights and len(flights) > 1:
+        ret_flights = [flights[-1]]
 
-    go_info = _extract_flight(go_flight)
-    ret_info = _extract_flight(ret_flight)
+    go_info = _extract_flights(go_flights)
+    ret_info = _extract_flights(ret_flights)
 
     # 计算游玩天数
     stay_days = 0
@@ -138,6 +191,9 @@ def _parse_single_route(route, sdate, allow_intl=False):
         "dep_time": go_info["dep_time"],
         "arr_time": go_info["arr_time"],
         "duration": go_info["duration"],
+        "transfer_time": go_info["transfer_time"],
+        "transfer_count": go_info["transfer_count"],
+        "transfer_cities": go_info["transfer_cities"],
         # 返程
         "ret_flight_no": ret_info["flight_no"],
         "ret_airline": ret_info["airline"],
@@ -146,6 +202,9 @@ def _parse_single_route(route, sdate, allow_intl=False):
         "ret_dep_time": ret_info["dep_time"],
         "ret_arr_time": ret_info["arr_time"],
         "ret_duration": ret_info["duration"],
+        "ret_transfer_time": ret_info["transfer_time"],
+        "ret_transfer_count": ret_info["transfer_count"],
+        "ret_transfer_cities": ret_info["transfer_cities"],
         "tags": tags,
     }
 
